@@ -1,101 +1,203 @@
 package main
 
 import (
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/lambda"
+	"github.com/aws/aws-sdk-go/aws/awserr"
+
+	"github.com/go-yaml/yaml"
+
+	"archive/zip"
+	"bytes"
+	"fmt"
+	"io/ioutil"
+	"os"
 	"path"
-  "fmt"
-  "os"
-  "os/exec"
 )
 
+var GOPATH = os.Getenv("GOPATH")
+
 type Config struct {
-  Path string `yaml:"path"`
+	Name string
+	Path string
+	Iam  string `yaml:"iam"`
 }
 
-type Function struct {
-  Name     string
-	Endpoint string
-	Methods  []string
-}
-
-var functions []Function
 var config Config
 
-func check(e error) {
-    if e != nil {
-        panic(e)
-    }
+var (
+	sess *session.Session = session.Must(session.NewSessionWithOptions(session.Options{
+		SharedConfigState: session.SharedConfigEnable,
+	}))
+
+	svc *lambda.Lambda = lambda.New(sess, &aws.Config{Region: aws.String("eu-south-1")})
+)
+
+func check(err error) {
+	if err != nil {
+		panic(err)
+	}
 }
 
-func GoGet(pkg string) error {
-  cmd := exec.Command("go", "get", pkg)
-  cmd.Env = append(os.Environ(),
-    fmt.Sprintf("GOPATH=%s", config.Path),
-  )
-  return cmd.Start()
+func awscheck(err error) {
+	if err != nil {
+		if aerr, ok := err.(awserr.Error); ok {
+			switch aerr.Code() {
+			case lambda.ErrCodeServiceException:
+				fmt.Println(lambda.ErrCodeServiceException, aerr.Error())
+			case lambda.ErrCodeInvalidParameterValueException:
+				fmt.Println(lambda.ErrCodeInvalidParameterValueException, aerr.Error())
+			case lambda.ErrCodeResourceNotFoundException:
+				fmt.Println(lambda.ErrCodeResourceNotFoundException, aerr.Error())
+			case lambda.ErrCodeResourceConflictException:
+				fmt.Println(lambda.ErrCodeResourceConflictException, aerr.Error())
+			case lambda.ErrCodeTooManyRequestsException:
+				fmt.Println(lambda.ErrCodeTooManyRequestsException, aerr.Error())
+			case lambda.ErrCodeCodeStorageExceededException:
+				fmt.Println(lambda.ErrCodeCodeStorageExceededException, aerr.Error())
+			default:
+				fmt.Println(aerr.Error())
+			}
+		} else {
+			fmt.Println(err.Error())
+		}
+		return
+	}
 }
 
-func GoInit(name string) error {
-  cmd := exec.Command("go", "mod", "init", name)
-  cmd.Env = append(os.Environ(),
-    fmt.Sprintf("GOPATH=%s", config.Path),
-  )
-  return cmd.Start()
-}
+// Create zip archive of lambda `fn`
+func Zip(fn string) []byte {
+	buf := new(bytes.Buffer)
 
-func GoBuild(fn string) error {
-  cmd := exec.Command("go", "build", ".")
-  cmd.Env = append(os.Environ(),
-    fmt.Sprintf("GOPATH=%s/src/%s", config.Path, fn),
-  )
-  return cmd.Start()
-}
+	code, err := ioutil.ReadFile(fmt.Sprintf("%s/bin/%s", config.Path, fn))
+	w := zip.NewWriter(buf)
 
-func GitInit(path string) error {
-  cmd := exec.Command("git", "init", path)
-  return cmd.Start()
-}
-
-func Init(name string) {
-	fmt.Printf("initializing project\n")
-
-	check(GitInit(config.Path))
-  check(GoGet("github.com/aws/aws-sdk-go"))
-  check(GoGet("github.com/aws/aws-lambda-go/lambda"))
-
-	check(GoInit(name))
-}
-
-func New(name string) error {
-	var err error
-
-  err = os.MkdirAll(fmt.Sprintf("%s/cmd/%s", config.Path, name), 0755)
+	f, err := w.Create(fn)
+	_, err = f.Write([]byte(code))
 	check(err)
 
-	file, err := os.Create(fmt.Sprintf("%s/cmd/%s/main.go", config.Path, name))
+	w.Close()
+
+	return buf.Bytes()
+}
+
+// Return true if current directory is a sigol path, false otherwise
+func IsProject() bool {
+	if _, err := os.Stat(config.Path + "/.sigol.yml"); os.IsNotExist(err) {
+	return false;
+	}
+	return true;
+}
+
+// Initialize a sigol project
+//
+// Created directories:
+// - bin: compiled binaries
+// - cmd: source code
+func Init() {
+	fmt.Printf("initializing project\n")
+
+	check(os.MkdirAll(config.Path, 0755))
+	check(os.MkdirAll(config.Path + "/bin", 0755))
+	check(os.MkdirAll(config.Path + "/cmd", 0755))
+
+	check(GitInit(config.Path))
+	check(GoInit(config.Path, config.Name))
+	check(GoGet(config.Path, "github.com/aws/aws-sdk-go"))
+	check(GoGet(config.Path, "github.com/aws/aws-lambda-go/lambda"))
+
+	file, err := os.Create(fmt.Sprintf("%s/.sigol.yml", config.Path))
+	defer file.Close()
+	check(err)
+}
+
+// Returns true if lambda `fn` has already been created, false otherwise
+// TODO change to a explicative name
+func Exists(fn string) bool {
+	input := &lambda.GetFunctionInput{
+			FunctionName: aws.String(fn),
+	}
+
+	_, err := svc.GetFunction(input)
+	return err == nil
+}
+
+// Generate all files relative to a lambda
+// TODO component codegen here
+func New(fn string) {
+	var err error
+
+	err = os.MkdirAll(fmt.Sprintf("%s/cmd/%s", config.Path, fn), 0755)
+	check(err)
+
+	file, err := os.Create(fmt.Sprintf("%s/cmd/%s/main.go", config.Path, fn))
 	defer file.Close()
 
-	return nil
+	_, err = file.WriteString("package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Print(\"Hello, World!\")\n}\n")
+}
+
+// Upload compiled lambda to AWS
+func Upload(fn string) {
+	if Exists(fn) {
+		input := &lambda.UpdateFunctionCodeInput{
+				FunctionName: aws.String(fn),
+				ZipFile:      Zip(fn),
+		}
+		_, err := svc.UpdateFunctionCode(input)
+		awscheck(err)
+	} else {
+		if config.Iam == "" {
+			fmt.Errorf("missing IAM role in configuration, cannot create new lambdas")
+			return
+		}
+		input := &lambda.CreateFunctionInput{
+			Code:         &lambda.FunctionCode{
+				ZipFile:    Zip(fn),
+			},
+			FunctionName: aws.String(fn),
+			Handler:      aws.String("main"),
+			Role:         aws.String(config.Iam),
+			Runtime:      aws.String("go1.x"),
+		}
+		_, err := svc.CreateFunction(input)
+		awscheck(err)
+	}
 }
 
 func main() {
-
 	config.Path, _ = os.Getwd()
+	config.Name = path.Base(config.Path)
+
+	// YAML > JSON
+	data, _ := ioutil.ReadFile(config.Path + "/.sigol.yml")
+	_ = yaml.Unmarshal([]byte(data), &config)
 
 	if len(os.Args) < 2 { return }
+	if config.Iam == "" {
+		fmt.Print("missing IAM role in configuration, won't be able to create new lambdas")
+	}
 
-	switch c := os.Args[1]; c {
+	switch os.Args[1] {
 	case "init":
-		n, _ := os.Getwd()
-		name := path.Base(n)
-
-		if len(os.Args) > 3 {
-			config.Path = os.Args[2]
+		/*
+		if len(os.Args) > 2 {
+			if os.Args[2] == "." {
+				config.Path, _ = os.Getwd()
+				config.Name = path.Base(config.Path)
+			} else {
+				config.Name = os.Args[2]
+				config.Path = GOPATH + "/src/" + os.Args[2]
+			}
+		} else {
+			panic("missing argument")
 		}
-
-		Init(name)
+		*/
+		Init()
 		break
 
 	case "new":
+		if !IsProject() { return }
 		if len(os.Args) > 2 {
 			New(os.Args[2])
 		} else {
@@ -104,13 +206,33 @@ func main() {
 		break
 
 	case "build":
+		if !IsProject() { return }
 		if len(os.Args) > 2 {
-			check(GoBuild(os.Args[2]))
+			check(GoBuild(config.Path, os.Args[2]))
 		} else {
 			panic("missing argument")
 		}
 		break
-	
+
+	case "upload":
+		if !IsProject() { return }
+		if len(os.Args) > 2 {
+			Upload(os.Args[2])
+		} else {
+			panic("missing argument")
+		}
+		break
+
+	case "update":
+		if !IsProject() { return }
+		if len(os.Args) > 2 {
+			check(GoBuild(config.Path, os.Args[2]))
+			Upload(os.Args[2])
+		} else {
+			panic("missing argument")
+		}
+		break
+
 	default:
 		break
 	}
