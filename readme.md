@@ -4,14 +4,14 @@
 ```sh
 # Create sigol project, pull required dependencies
 $ sigol init foobar
-# Create new AWS Lambda `token` with dynamo and S3 codegen
-$ sigol new token components=dynamodb,s3
+# Create new AWS Lambda `my-function` with dynamo and S3 codegen
+$ sigol new my-function components=dynamodb,s3
 # Compile Lambda
-$ sigol build token
-# Generate zip file and upload to AWS
-$ sigol build token
+$ sigol build my-function
+# Upload compiled binary to AWS
+$ sigol upload my-function
 # Equivalent to build + upload
-$ sigol update token
+$ sigol update my-function
 ```
 
 ## Missing features
