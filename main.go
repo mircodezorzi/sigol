@@ -16,22 +16,20 @@ import (
 	"path"
 )
 
-var GOPATH = os.Getenv("GOPATH")
-
 type Config struct {
-	Name string
-	Path string
-	Iam  string `yaml:"iam"`
+	Name    string
+	Path    string
+	Iam     string `yaml:"iam"`
+	Region  string `yaml:"region"`
 }
 
-var config Config
-
 var (
-	sess *session.Session = session.Must(session.NewSessionWithOptions(session.Options{
-		SharedConfigState: session.SharedConfigEnable,
-	}))
+	GOPATH = os.Getenv("GOPATH")
 
-	svc *lambda.Lambda = lambda.New(sess, &aws.Config{Region: aws.String("eu-south-1")})
+	config Config
+
+	sess *session.Session
+	svc *lambda.Lambda
 )
 
 func check(err error) {
@@ -104,8 +102,12 @@ func Init() {
 
 	check(GitInit(config.Path))
 	check(GoInit(config.Path, config.Name))
-	check(GoGet(config.Path, "github.com/aws/aws-sdk-go"))
+	check(GoGet(config.Path, "github.com/aws/aws-lambda-go/events"))
 	check(GoGet(config.Path, "github.com/aws/aws-lambda-go/lambda"))
+  check(GoGet(config.Path, "github.com/aws/aws-sdk-go/aws"))
+  check(GoGet(config.Path, "github.com/aws/aws-sdk-go/aws/session"))
+	check(GoGet(config.Path, "github.com/aws/aws-sdk-go/service/dynamodb"))
+
 
 	file, err := os.Create(fmt.Sprintf("%s/.sigol.yml", config.Path))
 	defer file.Close()
@@ -134,7 +136,29 @@ func New(fn string) {
 	file, err := os.Create(fmt.Sprintf("%s/cmd/%s/main.go", config.Path, fn))
 	defer file.Close()
 
-	_, err = file.WriteString("package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Print(\"Hello, World!\")\n}\n")
+	_, err = file.WriteString(fmt.Sprintf(`package main
+
+import (
+	"github.com/aws/aws-lambda-go/events"
+	"github.com/aws/aws-lambda-go/lambda"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/dynamodb"
+)
+
+var db = dynamodb.New(session.New(), aws.NewConfig().WithRegion("%s"))
+
+func Handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
+	return events.APIGatewayProxyResponse{
+		Body: "ok",
+		StatusCode: 200,
+	}, nil
+}
+
+func main() {
+	lambda.Start(Handler)
+}`, config.Region))
 }
 
 // Upload compiled lambda to AWS
@@ -160,8 +184,14 @@ func Upload(fn string) {
 			Role:         aws.String(config.Iam),
 			Runtime:      aws.String("go1.x"),
 		}
-		_, err := svc.CreateFunction(input)
+		result, err := svc.CreateFunction(input)
 		awscheck(err)
+
+		arn := *result.FunctionArn
+		Gateway(config.Name)
+		Resource(fn)
+		Method("GET")
+		Integration("GET", arn)
 	}
 }
 
@@ -177,6 +207,15 @@ func main() {
 	if config.Iam == "" {
 		fmt.Print("missing IAM role in configuration, won't be able to create new lambdas")
 	}
+	if config.Region == "" {
+		panic("missing region in configuration, won't be able to create new lambdas")
+	}
+
+	sess = session.Must(session.NewSessionWithOptions(session.Options{
+		SharedConfigState: session.SharedConfigEnable,
+	}))
+
+	svc = lambda.New(sess, &aws.Config{Region: aws.String(config.Region)})
 
 	switch os.Args[1] {
 	case "init":
@@ -208,6 +247,7 @@ func main() {
 	case "build":
 		if !IsProject() { return }
 		if len(os.Args) > 2 {
+			check(GoVendor(config.Path))
 			check(GoBuild(config.Path, os.Args[2]))
 		} else {
 			panic("missing argument")
