@@ -4,13 +4,32 @@ import (
 	"fmt"
 
 	"github.com/aws/aws-sdk-go/aws"
+
 	"github.com/aws/aws-sdk-go/service/apigateway"
+	"github.com/aws/aws-sdk-go/service/lambda"
 )
 
-var ApiId string
-var RootId string
-var ResourceId string
-var MethodId string
+var (
+	ApiId string
+	RootId string
+	ResourceId string
+	MethodId string
+)
+
+// Returns true if lambda `fn` has already been created, false otherwise
+func LambdaExists(fn string) bool {
+	input := &lambda.GetFunctionInput{
+		FunctionName: aws.String(fn),
+	}
+
+	_, err := svc.GetFunction(input)
+	return err == nil
+}
+
+
+
+
+
 
 func Gateway(name string) {
 	ApiId = CheckForGateway(name)

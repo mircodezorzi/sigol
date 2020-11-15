@@ -1,24 +1,47 @@
 package main
 
 import (
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/lambda"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-
-	"github.com/go-yaml/yaml"
-
 	"archive/zip"
 	"bytes"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"path"
+	"strings"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/aws/awserr"
+
+	"github.com/aws/aws-sdk-go/service/lambda"
+
+	"github.com/go-yaml/yaml"
 )
 
+var template = `package main
+
+import (
+	"github.com/aws/aws-lambda-go/events"
+	"github.com/aws/aws-lambda-go/lambda"%s
+)%s
+
+func Handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
+	return events.APIGatewayProxyResponse{
+		Body: "ok",
+		StatusCode: 200,
+	}, nil
+}
+
+func main() {
+	lambda.Start(Handler)
+}`
+
 type Config struct {
+	// Project Names
 	Name    string
+	// Project Path
 	Path    string
+
 	Iam     string `yaml:"iam"`
 	Region  string `yaml:"region"`
 }
@@ -41,22 +64,7 @@ func check(err error) {
 func awscheck(err error) {
 	if err != nil {
 		if aerr, ok := err.(awserr.Error); ok {
-			switch aerr.Code() {
-			case lambda.ErrCodeServiceException:
-				fmt.Println(lambda.ErrCodeServiceException, aerr.Error())
-			case lambda.ErrCodeInvalidParameterValueException:
-				fmt.Println(lambda.ErrCodeInvalidParameterValueException, aerr.Error())
-			case lambda.ErrCodeResourceNotFoundException:
-				fmt.Println(lambda.ErrCodeResourceNotFoundException, aerr.Error())
-			case lambda.ErrCodeResourceConflictException:
-				fmt.Println(lambda.ErrCodeResourceConflictException, aerr.Error())
-			case lambda.ErrCodeTooManyRequestsException:
-				fmt.Println(lambda.ErrCodeTooManyRequestsException, aerr.Error())
-			case lambda.ErrCodeCodeStorageExceededException:
-				fmt.Println(lambda.ErrCodeCodeStorageExceededException, aerr.Error())
-			default:
-				fmt.Println(aerr.Error())
-			}
+			fmt.Println(aerr.Error())
 		} else {
 			fmt.Println(err.Error())
 		}
@@ -64,8 +72,8 @@ func awscheck(err error) {
 	}
 }
 
-// Create zip archive of lambda `fn`
-func Zip(fn string) []byte {
+// Create in-memory archive of Lambda `fn`
+func Zip(fn string) ([]byte, error) {
 	buf := new(bytes.Buffer)
 
 	code, err := ioutil.ReadFile(fmt.Sprintf("%s/bin/%s", config.Path, fn))
@@ -73,17 +81,19 @@ func Zip(fn string) []byte {
 
 	f, err := w.Create(fn)
 	_, err = f.Write([]byte(code))
-	check(err)
+	if err != nil {
+		return []byte(nil), &CannotZipFileError{fn}
+	}
 
 	w.Close()
 
-	return buf.Bytes()
+	return buf.Bytes(), nil
 }
 
 // Return true if current directory is a sigol path, false otherwise
 func IsProject() bool {
 	if _, err := os.Stat(config.Path + "/.sigol.yml"); os.IsNotExist(err) {
-	return false;
+		return false;
 	}
 	return true;
 }
@@ -104,8 +114,8 @@ func Init() {
 	check(GoInit(config.Path, config.Name))
 	check(GoGet(config.Path, "github.com/aws/aws-lambda-go/events"))
 	check(GoGet(config.Path, "github.com/aws/aws-lambda-go/lambda"))
-  check(GoGet(config.Path, "github.com/aws/aws-sdk-go/aws"))
-  check(GoGet(config.Path, "github.com/aws/aws-sdk-go/aws/session"))
+	check(GoGet(config.Path, "github.com/aws/aws-sdk-go/aws"))
+	check(GoGet(config.Path, "github.com/aws/aws-sdk-go/aws/session"))
 	check(GoGet(config.Path, "github.com/aws/aws-sdk-go/service/dynamodb"))
 
 
@@ -114,20 +124,43 @@ func Init() {
 	check(err)
 }
 
-// Returns true if lambda `fn` has already been created, false otherwise
-// TODO change to a explicative name
-func Exists(fn string) bool {
-	input := &lambda.GetFunctionInput{
-			FunctionName: aws.String(fn),
+func FormatTemplate(services []string) string {
+	var (
+		vars    string
+		imports string
+	)
+
+	for _, j := range services {
+		imports += fmt.Sprintf("\n\t\"github.com/aws/aws-sdk-go/service/%s\"", j)
 	}
 
-	_, err := svc.GetFunction(input)
-	return err == nil
+	for _, j := range services {
+		vars += fmt.Sprintf("\n\t%s = %s.New(sess, &aws.Config{Region: aws.String(REGION)}", j, j)
+	}
+
+	if imports != "" {
+		imports = "\n\n\t\"github.com/aws/aws-sdk-go/aws\"\n\t\"github.com/aws/aws-sdk-go/aws/session\"\n" + imports
+	}
+
+	if vars != "" {
+		vars = fmt.Sprintf(`
+
+var (
+	sess *session.Session = session.Must(session.NewSessionWithOptions(session.Options{
+		SharedConfigState: session.SharedConfigEnable,
+	}))
+
+	REGION = "%s"
+%s
+)`, config.Region, vars)
+	}
+
+	return fmt.Sprintf(template, imports, vars)
 }
 
 // Generate all files relative to a lambda
 // TODO component codegen here
-func New(fn string) {
+func New(fn string, components []string) {
 	var err error
 
 	err = os.MkdirAll(fmt.Sprintf("%s/cmd/%s", config.Path, fn), 0755)
@@ -136,37 +169,18 @@ func New(fn string) {
 	file, err := os.Create(fmt.Sprintf("%s/cmd/%s/main.go", config.Path, fn))
 	defer file.Close()
 
-	_, err = file.WriteString(fmt.Sprintf(`package main
-
-import (
-	"github.com/aws/aws-lambda-go/events"
-	"github.com/aws/aws-lambda-go/lambda"
-
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/dynamodb"
-)
-
-var db = dynamodb.New(session.New(), aws.NewConfig().WithRegion("%s"))
-
-func Handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
-	return events.APIGatewayProxyResponse{
-		Body: "ok",
-		StatusCode: 200,
-	}, nil
-}
-
-func main() {
-	lambda.Start(Handler)
-}`, config.Region))
+	_, err = file.WriteString(FormatTemplate(components))
 }
 
 // Upload compiled lambda to AWS
 func Upload(fn string) {
-	if Exists(fn) {
+	compressed, err := Zip(fn)
+	check(err)
+
+	if LambdaExists(fn) {
 		input := &lambda.UpdateFunctionCodeInput{
 				FunctionName: aws.String(fn),
-				ZipFile:      Zip(fn),
+				ZipFile:      compressed,
 		}
 		_, err := svc.UpdateFunctionCode(input)
 		awscheck(err)
@@ -176,13 +190,13 @@ func Upload(fn string) {
 			return
 		}
 		input := &lambda.CreateFunctionInput{
-			Code:         &lambda.FunctionCode{
-				ZipFile:    Zip(fn),
-			},
 			FunctionName: aws.String(fn),
 			Handler:      aws.String("main"),
 			Role:         aws.String(config.Iam),
 			Runtime:      aws.String("go1.x"),
+			Code:         &lambda.FunctionCode{
+				ZipFile:    compressed,
+			},
 		}
 		result, err := svc.CreateFunction(input)
 		awscheck(err)
@@ -261,7 +275,16 @@ func main() {
 	case "new":
 		if !IsProject() { return }
 		if len(os.Args) > 2 {
-			New(os.Args[2])
+			var components []string
+			if len(os.Args) > 3 {
+				split := strings.Split(os.Args[3], "=")
+				if len(split) > 1 && len(split) < 3 {
+					if split[0] == "--components" || split[0] == "-c" {
+						components = strings.Split(split[1], ",")
+					}
+				}
+			}
+			New(os.Args[2], components)
 		} else {
 			panic("missing argument")
 		}
