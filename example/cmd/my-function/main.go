@@ -6,10 +6,21 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
+
 	"github.com/aws/aws-sdk-go/service/dynamodb"
+	"github.com/aws/aws-sdk-go/service/ecs"
 )
 
-var db = dynamodb.New(session.New(), aws.NewConfig().WithRegion("eu-south-1"))
+var (
+	sess *session.Session = session.Must(session.NewSessionWithOptions(session.Options{
+		SharedConfigState: session.SharedConfigEnable,
+	}))
+
+	REGION = "eu-south-1"
+
+	dynamodb = dynamodb.New(sess, &aws.Config{Region: aws.String(REGION)}
+	ecs = ecs.New(sess, &aws.Config{Region: aws.String(REGION)}
+)
 
 func Handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
 	return events.APIGatewayProxyResponse{
