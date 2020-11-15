@@ -29,7 +29,7 @@ func Gateway(name string) {
 
 func CheckForGateway(name string) string {
 	svc := apigateway.New(sess, &aws.Config{Region: aws.String(config.Region)})
-	input := &apigateway.GetRestApisInput{ }
+	input := &apigateway.GetRestApisInput{}
 	result, err := svc.GetRestApis(input)
 	awscheck(err)
 
@@ -81,6 +81,25 @@ func CheckForResource(name string) string {
 	}
 
 	return ""
+}
+
+func GetPaths() []string {
+	svc := apigateway.New(sess, &aws.Config{Region: aws.String(config.Region)})
+	input := &apigateway.GetResourcesInput{
+		RestApiId: aws.String(ApiId),
+	}
+	result, err := svc.GetResources(input)
+	awscheck(err)
+
+	var results []string
+
+	for _, i := range result.Items {
+		if i.PathPart != nil {
+			results = append(results, *i.PathPart)
+		}
+	}
+
+	return results
 }
 
 func CheckForMethod(method string) bool {

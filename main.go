@@ -195,6 +195,29 @@ func Upload(fn string) {
 	}
 }
 
+func List(target string) {
+	if target == "--local" {
+		fmt.Println("Local Lambdas:")
+		files, err := ioutil.ReadDir("./cmd")
+		check(err)
+
+		ApiId = CheckForGateway(config.Name)
+
+		for _, f := range files {
+			fmt.Printf("%s https://%s.execute-api.%s.amazonaws.com/default/%s\n", f.Name(), ApiId, config.Region, f.Name())
+		}
+	}
+	if target == "--remote" {
+		fmt.Println("Remote Lambdas:")
+		ApiId = CheckForGateway(config.Name)
+		resources := GetPaths()
+
+		for _, r := range resources {
+			fmt.Printf("%s https://%s.execute-api.%s.amazonaws.com/default/%s\n", r, ApiId, config.Region, r)
+		}
+	}
+}
+
 func main() {
 	config.Path, _ = os.Getwd()
 	config.Name = path.Base(config.Path)
@@ -241,6 +264,19 @@ func main() {
 			New(os.Args[2])
 		} else {
 			panic("missing argument")
+		}
+		break
+
+	case "ls":
+		if !IsProject() { return }
+		if len(os.Args) > 2 {
+			if os.Args[2] == "--local" || os.Args[2] == "--remote" {
+				List(os.Args[2])
+			} else {
+				panic("invalid argument")
+			}
+		} else {
+			List("--local")
 		}
 		break
 
