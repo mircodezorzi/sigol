@@ -1,5 +1,7 @@
 # sigol: AWS Golang Lambda management tool
 
+![](https://github.com/mircodezorzi/sigol/workflows/Build/badge.svg)
+
 ## Installation
 ```sh
 go get github.com/mircodezorzi/sigol
