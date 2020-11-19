@@ -26,6 +26,22 @@ $ sigol build my-function
 $ sigol upload my-function
 ```
 
+## Generate `serverless.yml`
+```plain
+$ sigol gen
+service: example
+
+provisioner:
+	name: aws
+	runtime: go1.x
+
+functions:
+	my-function:
+		handler: my-function
+		events:
+			- http: any my-function
+```
+
 ## Other functionalities
 - `sigol ls`
 - `sigol update`
