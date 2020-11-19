@@ -31,7 +31,7 @@ $ sigol upload my-function
 $ sigol gen
 service: example
 
-provisioner:
+provider:
 	name: aws
 	runtime: go1.x
 

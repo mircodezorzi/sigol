@@ -6,7 +6,7 @@ import (
 )
 
 func Emit() string {
-	file := fmt.Sprintf("service: %s\n\nprovisioner:\n\tname: aws\n\truntime: go1.x\n\nfunctions:", config.Name)
+	file := fmt.Sprintf("service: %s\n\nprovider:\n\tname: aws\n\truntime: go1.x\n\nfunctions:", config.Name)
 
 	files, err := ioutil.ReadDir("./cmd")
 	check(err)
