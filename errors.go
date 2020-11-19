@@ -11,3 +11,12 @@ type CannotZipFileError struct {
 func (e *CannotZipFileError) Error() string {
 	return fmt.Sprintf("error while zipping %s", e.filepath)
 }
+
+type LambdaExistsError struct {
+	method string
+	name   string
+}
+
+func (e *LambdaExistsError) Error() string {
+	return fmt.Sprintf("lambda %s (%s) already exists", e.name, e.method)
+}

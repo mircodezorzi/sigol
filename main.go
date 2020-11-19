@@ -9,11 +9,9 @@ import (
 	"path"
 	"strings"
 
-	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 
-	"github.com/aws/aws-sdk-go/service/lambda"
 
 	"github.com/go-yaml/yaml"
 )
@@ -52,7 +50,6 @@ var (
 	config Config
 
 	sess *session.Session
-	svc *lambda.Lambda
 )
 
 func check(err error) {
@@ -174,65 +171,67 @@ func New(fn string, components []string) {
 
 // Upload compiled lambda to AWS
 func Upload(fn string) {
-	compressed, err := Zip(fn)
-	check(err)
+	api := NewApi(config.Name)
 
 	if LambdaExists(fn) {
-		input := &lambda.UpdateFunctionCodeInput{
-				FunctionName: aws.String(fn),
-				ZipFile:      compressed,
-		}
-		_, err := svc.UpdateFunctionCode(input)
+		err := api.UpdateLambda(fn)
 		awscheck(err)
 	} else {
 		if config.Iam == "" {
 			fmt.Errorf("missing IAM role in configuration, cannot create new lambdas")
 			return
 		}
-		input := &lambda.CreateFunctionInput{
-			FunctionName: aws.String(fn),
-			Handler:      aws.String("main"),
-			Role:         aws.String(config.Iam),
-			Runtime:      aws.String("go1.x"),
-			Code:         &lambda.FunctionCode{
-				ZipFile:    compressed,
-			},
-		}
-		result, err := svc.CreateFunction(input)
+		err := api.NewLambda(fn, "GET")
 		awscheck(err)
-
-		arn := *result.FunctionArn
-		Gateway(config.Name)
-		Resource(fn)
-		Method("GET")
-		Integration("GET", arn)
 	}
 }
 
 func List(target string) {
+	api := NewApi(config.Name)
+
 	if target == "--local" {
 		fmt.Println("Local Lambdas:")
 		files, err := ioutil.ReadDir("./cmd")
 		check(err)
 
-		ApiId = CheckForGateway(config.Name)
-
 		for _, f := range files {
-			fmt.Printf("%s https://%s.execute-api.%s.amazonaws.com/default/%s\n", f.Name(), ApiId, config.Region, f.Name())
+			fmt.Printf("%s https://%s.execute-api.%s.amazonaws.com/default/%s\n", f.Name(), api.ApiId, config.Region, f.Name())
 		}
 	}
 	if target == "--remote" {
 		fmt.Println("Remote Lambdas:")
-		ApiId = CheckForGateway(config.Name)
-		resources := GetPaths()
+		resources := api.GetPaths()
 
 		for _, r := range resources {
-			fmt.Printf("%s https://%s.execute-api.%s.amazonaws.com/default/%s\n", r, ApiId, config.Region, r)
+			fmt.Printf("%s https://%s.execute-api.%s.amazonaws.com/default/%s\n", r, api.ApiId, config.Region, r)
 		}
 	}
 }
 
+func Help() {
+	fmt.Print(`Usage: sigol [commands...]
+
+Commands:
+	help	Print this message
+	init	Create new sigol project
+	new	Create new Lambda
+	upload	Upload Lambda to AWS
+	build	Build golang Lambda
+	update	Equivalent to build and update
+	ls	List --local or --remote Lambdas
+	gen	Generate serverless.yml
+
+Examples:
+	sigol init example
+	sigol new my-function --components=dynamodb,s3
+	sigol build my-function
+	sigol upload my-function
+`)
+	os.Exit(1)
+}
+
 func main() {
+
 	config.Path, _ = os.Getwd()
 	config.Name = path.Base(config.Path)
 
@@ -240,35 +239,33 @@ func main() {
 	data, _ := ioutil.ReadFile(config.Path + "/.sigol.yml")
 	_ = yaml.Unmarshal([]byte(data), &config)
 
-	if len(os.Args) < 2 { return }
-	if config.Iam == "" {
-		fmt.Print("missing IAM role in configuration, won't be able to create new lambdas")
+	if len(os.Args) < 2 {
+		Help()
 	}
+
 	if config.Region == "" {
-		panic("missing region in configuration, won't be able to create new lambdas")
+		fmt.Println("missing region in configuration, quitting")
+		os.Exit(1)
+	}
+
+	if config.Iam == "" {
+		fmt.Println("missing IAM role in configuration, won't be able to create new lambdas")
 	}
 
 	sess = session.Must(session.NewSessionWithOptions(session.Options{
 		SharedConfigState: session.SharedConfigEnable,
 	}))
 
-	svc = lambda.New(sess, &aws.Config{Region: aws.String(config.Region)})
-
 	switch os.Args[1] {
+	case "help":
+		Help()
+		break
+
 	case "init":
-		/*
-		if len(os.Args) > 2 {
-			if os.Args[2] == "." {
-				config.Path, _ = os.Getwd()
-				config.Name = path.Base(config.Path)
-			} else {
-				config.Name = os.Args[2]
-				config.Path = GOPATH + "/src/" + os.Args[2]
-			}
-		} else {
-			panic("missing argument")
+		if IsProject() {
+			fmt.Printf("Already in a sigol project.")
+			return
 		}
-		*/
 		Init()
 		break
 
@@ -311,6 +308,11 @@ func main() {
 		} else {
 			panic("missing argument")
 		}
+		break
+
+	case "gen":
+		if !IsProject() { return }
+		fmt.Printf(Emit())
 		break
 
 	case "upload":

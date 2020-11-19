@@ -30,5 +30,17 @@ $ sigol upload my-function
 - `sigol ls`
 - `sigol update`
 
+## API
+```go
+api := NewApi("example")
+if !LambdaExists(fn) {
+  err := api.NewLambda("my-function", "ANY")
+  check(err)
+} else {
+  err := api.UpdateLambda("my-function")
+  check(err)
+}
+```
+
 ## Missing features
 - better error checking and handling
